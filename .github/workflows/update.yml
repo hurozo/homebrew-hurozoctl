@@ -1,0 +1,66 @@
+name: Update hurozoctl formula
+
+on:
+  repository_dispatch:
+    types: [hurozoctl-release]
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: sigstore/cosign-installer@v3
+      - name: Mint repository-scoped release token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: hurozo
+          repositories: homebrew-hurozoctl
+      - name: Verify assets and update formula
+        env:
+          VERSION: ${{ github.event.client_payload.version }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          test -n "$VERSION"
+          mkdir release
+          gh release download "v$VERSION" --repo hurozo/hurozoctl --dir release
+          (cd release && shasum -a 256 -c SHA256SUMS)
+          cosign verify-blob --bundle release/SHA256SUMS.sigstore.json \
+            --certificate-identity-regexp 'github.com/hurozo/hurozoctl-build/.github/workflows/release.yml' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            release/SHA256SUMS
+          arm="$(shasum -a 256 "release/hurozoctl_${VERSION}_darwin_arm64.tar.gz" | cut -d' ' -f1)"
+          amd="$(shasum -a 256 "release/hurozoctl_${VERSION}_darwin_amd64.tar.gz" | cut -d' ' -f1)"
+          ruby - "$VERSION" "$arm" "$amd" <<'RUBY'
+          path, version, arm, amd = "Formula/hurozoctl.rb", *ARGV
+          formula = File.read(path)
+          formula.sub!(/version "[^"]+"/, "version \"#{version}\"")
+          formula.gsub!(/download\/v[^\/]+\/hurozoctl_[^_]+_darwin_/, "download/v#{version}/hurozoctl_#{version}_darwin_")
+          formula.sub!(/sha256 "(?:[0-9a-f]{64}|ARM64_SHA256_PENDING_FIRST_RELEASE)"/, "sha256 \"#{arm}\"")
+          formula.sub!(/sha256 "(?:[0-9a-f]{64}|AMD64_SHA256_PENDING_FIRST_RELEASE)"/, "sha256 \"#{amd}\"")
+          File.write(path, formula)
+          RUBY
+      - name: Audit and execute packaged binary
+        run: |
+          brew tap hurozo/hurozoctl "${GITHUB_WORKSPACE}"
+          brew audit --strict --online hurozoctl
+          brew install hurozoctl
+          test "$(hurozoctl version | cut -d+ -f1)" = "${{ github.event.client_payload.version }}"
+      - name: Open protected formula update
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          VERSION: ${{ github.event.client_payload.version }}
+        run: |
+          branch="release/hurozoctl-$VERSION"
+          git config user.name hurozo-release-bot
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git switch -c "$branch"
+          git add Formula/hurozoctl.rb
+          git commit -m "Update hurozoctl to $VERSION"
+          git push origin "$branch"
+          gh pr create --title "Update hurozoctl to $VERSION" --body "Verified public release assets and checksums." --base main --head "$branch"

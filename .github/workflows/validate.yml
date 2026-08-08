@@ -1,0 +1,26 @@
+name: Validate tap
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  syntax:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: ruby -c Formula/hurozoctl.rb
+      - name: Audit released formula
+        run: |
+          if grep -q PENDING_FIRST_RELEASE Formula/hurozoctl.rb; then
+            echo "Formula is awaiting the first verified public release."
+            exit 0
+          fi
+          brew tap hurozo/hurozoctl "${GITHUB_WORKSPACE}"
+          brew audit --strict --online hurozoctl
+          brew install hurozoctl
+          hurozoctl version
