@@ -5,6 +5,7 @@ on:
     types: [hurozoctl-release]
 
 permissions:
+  actions: write
   contents: write
   pull-requests: write
 
@@ -37,7 +38,7 @@ jobs:
             --pattern "hurozoctl_${VERSION}_darwin_amd64.tar.gz"
           cosign verify-blob \
             --bundle release/SHA256SUMS.sigstore.json \
-            --certificate-identity-regexp '^https://github\\.com/hurozo/hurozoctl-build/\\.github/workflows/release\\.yml@refs/heads/main$' \
+            --certificate-identity-regexp '^https://github\.com/hurozo/hurozoctl-build/\.github/workflows/release\.yml@refs/heads/main$' \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             release/SHA256SUMS
           for arch in arm64 amd64; do
@@ -89,13 +90,35 @@ jobs:
             exit 0
           fi
           branch="automation/hurozoctl-v${VERSION}"
-          test -z "$(git ls-remote --heads origin "refs/heads/$branch")"
-          git config user.name "$GITHUB_ACTOR"
-          git config user.email "${GITHUB_ACTOR_ID}+${GITHUB_ACTOR}@users.noreply.github.com"
-          git checkout -b "$branch"
-          git add Formula/hurozoctl.rb
-          git commit -m "Update hurozoctl to ${VERSION}"
-          git push origin "$branch"
-          gh pr create --base main --head "$branch" \
-            --title "Update hurozoctl to ${VERSION}" \
-            --body "Verified the public release checksums and Sigstore identity, then updated both macOS architectures."
+          if test -n "$(git ls-remote --heads origin "refs/heads/$branch")"; then
+            git fetch origin "refs/heads/$branch:refs/remotes/origin/$branch"
+            test "$(git diff --name-only HEAD...origin/$branch)" = Formula/hurozoctl.rb
+            git show "origin/$branch:Formula/hurozoctl.rb" > "$RUNNER_TEMP/remote-formula.rb"
+            cmp Formula/hurozoctl.rb "$RUNNER_TEMP/remote-formula.rb"
+          else
+            git config user.name "$GITHUB_ACTOR"
+            git config user.email "${GITHUB_ACTOR_ID}+${GITHUB_ACTOR}@users.noreply.github.com"
+            git checkout -b "$branch"
+            git add Formula/hurozoctl.rb
+            git commit -m "Update hurozoctl to ${VERSION}"
+            git push origin "$branch"
+          fi
+          if test "$(gh pr list --base main --head "$branch" --state open --json number --jq length)" -eq 0; then
+            gh pr create --base main --head "$branch" \
+              --title "Update hurozoctl to ${VERSION}" \
+              --body "Verified the public release checksums and Sigstore identity, then updated both macOS architectures."
+          fi
+
+          previous_run="$(gh run list --workflow validate.yml --branch "$branch" --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // 0')"
+          gh workflow run validate.yml --ref "$branch"
+          run_id=""
+          for attempt in $(seq 1 30); do
+            candidate="$(gh run list --workflow validate.yml --branch "$branch" --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // 0')"
+            if test "$candidate" != 0 && test "$candidate" != "$previous_run"; then
+              run_id="$candidate"
+              break
+            fi
+            sleep 2
+          done
+          test -n "$run_id"
+          gh run watch "$run_id" --exit-status
