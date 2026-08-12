@@ -10,7 +10,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: formula-${{ github.event.client_payload.version }}
+  group: formula
   cancel-in-progress: false
 
 jobs:
@@ -60,6 +60,12 @@ jobs:
           ruby <<'RUBY'
           path = "Formula/hurozoctl.rb"
           text = File.read(path)
+          current = text[/^  version "([^"]+)"$/, 1]
+          abort "formula version is missing" unless current
+          require "rubygems/version"
+          if Gem::Version.new(ENV.fetch("VERSION")) < Gem::Version.new(current)
+            abort "refusing formula downgrade from #{current} to #{ENV.fetch("VERSION")}"
+          end
           replacements = {
             /^  version ".*"$/ => %(  version "#{ENV.fetch("VERSION")}"),
             %r{^      url ".*/hurozoctl_[^/]+_darwin_arm64\.tar\.gz"$} => %(      url "https://github.com/hurozo/hurozoctl/releases/download/v#{ENV.fetch("VERSION")}/hurozoctl_#{ENV.fetch("VERSION")}_darwin_arm64.tar.gz"),
@@ -81,45 +87,22 @@ jobs:
           RUBY
           ruby -c Formula/hurozoctl.rb
           ! grep -q PENDING_FIRST_RELEASE Formula/hurozoctl.rb
-      - name: Open protected formula update
+      - name: Audit and install verified formula
+        run: |
+          brew tap hurozo/hurozoctl "${GITHUB_WORKSPACE}"
+          brew audit --strict --online hurozoctl
+          brew install hurozoctl
+          hurozoctl version
+      - name: Publish verified formula
         env:
-          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.release.outputs.version }}
         run: |
           if git diff --quiet -- Formula/hurozoctl.rb; then
             exit 0
           fi
-          branch="automation/hurozoctl-v${VERSION}"
-          if test -n "$(git ls-remote --heads origin "refs/heads/$branch")"; then
-            git fetch origin "refs/heads/$branch:refs/remotes/origin/$branch"
-            test "$(git diff --name-only "HEAD...origin/$branch")" = "Formula/hurozoctl.rb"
-            git show "origin/$branch:Formula/hurozoctl.rb" > "$RUNNER_TEMP/remote-formula.rb"
-            cmp Formula/hurozoctl.rb "$RUNNER_TEMP/remote-formula.rb"
-          else
-            git config user.name "$GITHUB_ACTOR"
-            git config user.email "${GITHUB_ACTOR_ID}+${GITHUB_ACTOR}@users.noreply.github.com"
-            git checkout -b "$branch"
-            git add Formula/hurozoctl.rb
-            git commit -m "Update hurozoctl to ${VERSION}"
-            git push origin "$branch"
-          fi
-          if test "$(gh pr list --base main --head "$branch" --state open --json number --jq length)" -eq 0; then
-            gh pr create --base main --head "$branch" \
-              --title "Update hurozoctl to ${VERSION}" \
-              --body "Verified the public release checksums and Sigstore identity, then updated both macOS architectures."
-          fi
-
-          previous_run="$(gh run list --workflow validate.yml --branch "$branch" --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // 0')"
-          gh workflow run validate.yml --ref "$branch"
-          run_id=""
-          for attempt in $(seq 1 30); do
-            printf 'waiting for validation run (attempt %s/30)\n' "$attempt"
-            candidate="$(gh run list --workflow validate.yml --branch "$branch" --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // 0')"
-            if test "$candidate" != 0 && test "$candidate" != "$previous_run"; then
-              run_id="$candidate"
-              break
-            fi
-            sleep 2
-          done
-          test -n "$run_id"
-          gh run watch "$run_id" --exit-status
+          test "$(git diff --name-only)" = "Formula/hurozoctl.rb"
+          git config user.name "$GITHUB_ACTOR"
+          git config user.email "${GITHUB_ACTOR_ID}+${GITHUB_ACTOR}@users.noreply.github.com"
+          git add Formula/hurozoctl.rb
+          git commit -m "Update hurozoctl to ${VERSION}"
+          git push origin HEAD:main
