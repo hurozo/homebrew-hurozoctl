@@ -90,6 +90,7 @@ jobs:
       - name: Audit and install verified formula
         run: |
           brew tap hurozo/hurozoctl "${GITHUB_WORKSPACE}"
+          brew trust hurozo/hurozoctl
           brew audit --strict --online hurozoctl
           brew install hurozoctl
           hurozoctl version
