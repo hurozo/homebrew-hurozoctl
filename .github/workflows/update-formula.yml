@@ -92,7 +92,7 @@ jobs:
           branch="automation/hurozoctl-v${VERSION}"
           if test -n "$(git ls-remote --heads origin "refs/heads/$branch")"; then
             git fetch origin "refs/heads/$branch:refs/remotes/origin/$branch"
-            test "$(git diff --name-only HEAD...origin/$branch)" = "Formula/hurozoctl.rb"
+            test "$(git diff --name-only "HEAD...origin/$branch")" = "Formula/hurozoctl.rb"
             git show "origin/$branch:Formula/hurozoctl.rb" > "$RUNNER_TEMP/remote-formula.rb"
             cmp Formula/hurozoctl.rb "$RUNNER_TEMP/remote-formula.rb"
           else
