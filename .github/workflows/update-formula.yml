@@ -87,6 +87,21 @@ jobs:
           RUBY
           ruby -c Formula/hurozoctl.rb
           ! grep -q PENDING_FIRST_RELEASE Formula/hurozoctl.rb
+      - name: Prepare verified formula commit
+        id: formula
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          if git diff --quiet -- Formula/hurozoctl.rb; then
+            printf 'changed=false\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          test "$(git diff --name-only)" = "Formula/hurozoctl.rb"
+          git config user.name "$GITHUB_ACTOR"
+          git config user.email "${GITHUB_ACTOR_ID}+${GITHUB_ACTOR}@users.noreply.github.com"
+          git add Formula/hurozoctl.rb
+          git commit -m "Update hurozoctl to ${VERSION}"
+          printf 'changed=true\n' >> "$GITHUB_OUTPUT"
       - name: Audit and install verified formula
         run: |
           brew tap hurozo/hurozoctl "${GITHUB_WORKSPACE}"
@@ -95,15 +110,6 @@ jobs:
           brew install hurozoctl
           hurozoctl version
       - name: Publish verified formula
-        env:
-          VERSION: ${{ steps.release.outputs.version }}
+        if: steps.formula.outputs.changed == 'true'
         run: |
-          if git diff --quiet -- Formula/hurozoctl.rb; then
-            exit 0
-          fi
-          test "$(git diff --name-only)" = "Formula/hurozoctl.rb"
-          git config user.name "$GITHUB_ACTOR"
-          git config user.email "${GITHUB_ACTOR_ID}+${GITHUB_ACTOR}@users.noreply.github.com"
-          git add Formula/hurozoctl.rb
-          git commit -m "Update hurozoctl to ${VERSION}"
           git push origin HEAD:main
