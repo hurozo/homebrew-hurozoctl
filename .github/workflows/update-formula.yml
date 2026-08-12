@@ -92,7 +92,7 @@ jobs:
           branch="automation/hurozoctl-v${VERSION}"
           if test -n "$(git ls-remote --heads origin "refs/heads/$branch")"; then
             git fetch origin "refs/heads/$branch:refs/remotes/origin/$branch"
-            test "$(git diff --name-only HEAD...origin/$branch)" = Formula/hurozoctl.rb
+            test "$(git diff --name-only HEAD...origin/$branch)" = "Formula/hurozoctl.rb"
             git show "origin/$branch:Formula/hurozoctl.rb" > "$RUNNER_TEMP/remote-formula.rb"
             cmp Formula/hurozoctl.rb "$RUNNER_TEMP/remote-formula.rb"
           else
@@ -113,6 +113,7 @@ jobs:
           gh workflow run validate.yml --ref "$branch"
           run_id=""
           for attempt in $(seq 1 30); do
+            printf 'waiting for validation run (attempt %s/30)\n' "$attempt"
             candidate="$(gh run list --workflow validate.yml --branch "$branch" --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // 0')"
             if test "$candidate" != 0 && test "$candidate" != "$previous_run"; then
               run_id="$candidate"
