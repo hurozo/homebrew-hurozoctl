@@ -1,15 +1,15 @@
 class Hurozoctl < Formula
   desc "Administrative CLI for Hurozo Deployment Centers"
   homepage "https://github.com/hurozo/hurozoctl"
-  version "0.1.56"
+  version "0.1.57"
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/hurozo/hurozoctl/releases/download/v0.1.56/hurozoctl_0.1.56_darwin_arm64.tar.gz"
-      sha256 "50fbd78e194b89bf429cdfb89bb2871fb08b0aaa73f7f6b62ad1a09eff472358"
+      url "https://github.com/hurozo/hurozoctl/releases/download/v0.1.57/hurozoctl_0.1.57_darwin_arm64.tar.gz"
+      sha256 "c3711966073dd905c4e076236d48c56663f580d98ec172ebbb8b3bd5b66e7d1e"
     else
-      url "https://github.com/hurozo/hurozoctl/releases/download/v0.1.56/hurozoctl_0.1.56_darwin_amd64.tar.gz"
-      sha256 "b0f629f87460634237424e6724ae5bf08c1145eebfe031f45cd86490fb74790c"
+      url "https://github.com/hurozo/hurozoctl/releases/download/v0.1.57/hurozoctl_0.1.57_darwin_amd64.tar.gz"
+      sha256 "37a41a2b029c6182d2d5bf4566a7733675029e27ab409b39fcc92db2df6f80c2"
     end
   end
 
