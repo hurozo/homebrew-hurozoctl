@@ -1,0 +1,125 @@
+name: Update released formula
+
+on:
+  repository_dispatch:
+    types: [hurozoctl-release]
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: formula-${{ github.event.client_payload.version }}
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: sigstore/cosign-installer@v3
+      - name: Validate release version
+        id: release
+        env:
+          VERSION: ${{ github.event.client_payload.version }}
+        run: |
+          [[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          printf 'version=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
+      - name: Download and verify public release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          mkdir release
+          gh release download "v$VERSION" --repo hurozo/hurozoctl --dir release \
+            --pattern SHA256SUMS --pattern SHA256SUMS.sigstore.json \
+            --pattern "hurozoctl_${VERSION}_darwin_arm64.tar.gz" \
+            --pattern "hurozoctl_${VERSION}_darwin_amd64.tar.gz"
+          cosign verify-blob \
+            --bundle release/SHA256SUMS.sigstore.json \
+            --certificate-identity-regexp '^https://github\.com/hurozo/hurozoctl-build/\.github/workflows/release\.yml@refs/heads/main$' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            release/SHA256SUMS
+          for arch in arm64 amd64; do
+            asset="hurozoctl_${VERSION}_darwin_${arch}.tar.gz"
+            line="$(awk -v asset="$asset" '$2 == asset && $1 ~ /^[0-9a-f]{64}$/ {print}' release/SHA256SUMS)"
+            test "$(printf '%s\n' "$line" | grep -c .)" -eq 1
+            expected="${line%% *}"
+            actual="$(shasum -a 256 "release/$asset" | cut -d' ' -f1)"
+            test "$actual" = "$expected"
+            printf '%s=%s\n' "$(printf '%s' "$arch" | tr '[:lower:]' '[:upper:]')" "$actual" >> "$RUNNER_TEMP/checksums"
+          done
+      - name: Update formula exactly
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          ARM64_SHA256="$(awk -F= '$1 == "ARM64" {print $2}' "$RUNNER_TEMP/checksums")"
+          AMD64_SHA256="$(awk -F= '$1 == "AMD64" {print $2}' "$RUNNER_TEMP/checksums")"
+          export ARM64_SHA256 AMD64_SHA256
+          ruby <<'RUBY'
+          path = "Formula/hurozoctl.rb"
+          text = File.read(path)
+          replacements = {
+            /^  version ".*"$/ => %(  version "#{ENV.fetch("VERSION")}"),
+            %r{^      url ".*/hurozoctl_[^/]+_darwin_arm64\.tar\.gz"$} => %(      url "https://github.com/hurozo/hurozoctl/releases/download/v#{ENV.fetch("VERSION")}/hurozoctl_#{ENV.fetch("VERSION")}_darwin_arm64.tar.gz"),
+            %r{^      url ".*/hurozoctl_[^/]+_darwin_amd64\.tar\.gz"$} => %(      url "https://github.com/hurozo/hurozoctl/releases/download/v#{ENV.fetch("VERSION")}/hurozoctl_#{ENV.fetch("VERSION")}_darwin_amd64.tar.gz"),
+            /^      sha256 ".*"$/ => [%(      sha256 "#{ENV.fetch("ARM64_SHA256")}"), %(      sha256 "#{ENV.fetch("AMD64_SHA256")}")],
+          }
+          replacements.each do |pattern, replacement|
+            matches = text.scan(pattern).length
+            expected = replacement.is_a?(Array) ? replacement.length : 1
+            abort "unexpected #{pattern.inspect} match count: #{matches}" unless matches == expected
+            if replacement.is_a?(Array)
+              index = -1
+              text = text.gsub(pattern) { replacement[index += 1] }
+            else
+              text = text.sub(pattern, replacement)
+            end
+          end
+          File.write(path, text)
+          RUBY
+          ruby -c Formula/hurozoctl.rb
+          ! grep -q PENDING_FIRST_RELEASE Formula/hurozoctl.rb
+      - name: Open protected formula update
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          if git diff --quiet -- Formula/hurozoctl.rb; then
+            exit 0
+          fi
+          branch="automation/hurozoctl-v${VERSION}"
+          if test -n "$(git ls-remote --heads origin "refs/heads/$branch")"; then
+            git fetch origin "refs/heads/$branch:refs/remotes/origin/$branch"
+            test "$(git diff --name-only "HEAD...origin/$branch")" = "Formula/hurozoctl.rb"
+            git show "origin/$branch:Formula/hurozoctl.rb" > "$RUNNER_TEMP/remote-formula.rb"
+            cmp Formula/hurozoctl.rb "$RUNNER_TEMP/remote-formula.rb"
+          else
+            git config user.name "$GITHUB_ACTOR"
+            git config user.email "${GITHUB_ACTOR_ID}+${GITHUB_ACTOR}@users.noreply.github.com"
+            git checkout -b "$branch"
+            git add Formula/hurozoctl.rb
+            git commit -m "Update hurozoctl to ${VERSION}"
+            git push origin "$branch"
+          fi
+          if test "$(gh pr list --base main --head "$branch" --state open --json number --jq length)" -eq 0; then
+            gh pr create --base main --head "$branch" \
+              --title "Update hurozoctl to ${VERSION}" \
+              --body "Verified the public release checksums and Sigstore identity, then updated both macOS architectures."
+          fi
+
+          previous_run="$(gh run list --workflow validate.yml --branch "$branch" --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // 0')"
+          gh workflow run validate.yml --ref "$branch"
+          run_id=""
+          for attempt in $(seq 1 30); do
+            printf 'waiting for validation run (attempt %s/30)\n' "$attempt"
+            candidate="$(gh run list --workflow validate.yml --branch "$branch" --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // 0')"
+            if test "$candidate" != 0 && test "$candidate" != "$previous_run"; then
+              run_id="$candidate"
+              break
+            fi
+            sleep 2
+          done
+          test -n "$run_id"
+          gh run watch "$run_id" --exit-status
